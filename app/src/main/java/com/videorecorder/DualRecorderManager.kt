@@ -30,6 +30,7 @@ class DualRecorderManager(
     
     private var onStatusUpdate: ((String, String, Int) -> Unit)? = null
     private var frameTester: FrameContinuityTester? = null
+    private val fileManager = FileManager(context)
     
     companion object {
         private const val TAG = "DualRecorderManager"
@@ -192,6 +193,12 @@ class DualRecorderManager(
                     Log.e(TAG, "${recorderType.name} recording error: ${event.error}")
                 } else {
                     Log.d(TAG, "${recorderType.name} recording finalized: $filename")
+                    
+                    // Notify media scanner to make video visible in gallery
+                    val videoFile = File(fileManager.getRecordingsDirectory(), filename)
+                    if (videoFile.exists()) {
+                        fileManager.notifyMediaScanner(videoFile)
+                    }
                 }
             }
             is VideoRecordEvent.Status -> {
@@ -218,15 +225,7 @@ class DualRecorderManager(
     }
     
     private fun createOutputFile(): File {
-        val timestamp = dateFormat.format(Date())
-        val filename = "video_${timestamp}_segment_${String.format("%03d", segmentCount)}.mp4"
-        val outputDir = File(context.getExternalFilesDir(null), "recordings")
-        
-        if (!outputDir.exists()) {
-            outputDir.mkdirs()
-        }
-        
-        return File(outputDir, filename)
+        return fileManager.createVideoFile(segmentCount)
     }
     
     fun getTestResults(): FrameContinuityTester.TestResult? {

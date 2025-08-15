@@ -1,6 +1,8 @@
 package com.videorecorder
 
 import android.content.Context
+import android.content.Intent
+import android.media.MediaScannerConnection
 import android.os.Environment
 import android.os.StatFs
 import android.util.Log
@@ -21,12 +23,15 @@ class FileManager(private val context: Context) {
     private val dateFormat = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault())
     
     fun getRecordingsDirectory(): File {
-        val recordingsDir = File(context.getExternalFilesDir(null), RECORDINGS_FOLDER)
-        if (!recordingsDir.exists()) {
-            recordingsDir.mkdirs()
-            Log.d(TAG, "Created recordings directory: ${recordingsDir.absolutePath}")
+        // Use DCIM/Camera directory for standard gallery visibility
+        val dcimDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DCIM)
+        val cameraDir = File(dcimDir, "Camera")
+        
+        if (!cameraDir.exists()) {
+            cameraDir.mkdirs()
+            Log.d(TAG, "Created Camera directory: ${cameraDir.absolutePath}")
         }
-        return recordingsDir
+        return cameraDir
     }
     
     fun getFrameLogsDirectory(): File {
@@ -40,12 +45,30 @@ class FileManager(private val context: Context) {
     
     fun createVideoFile(segmentNumber: Int): File {
         val timestamp = dateFormat.format(Date())
-        val filename = "video_${timestamp}_segment_${String.format("%03d", segmentNumber)}.mp4"
+        val filename = "VID_${timestamp}_${String.format("%03d", segmentNumber)}.mp4"
         val recordingsDir = getRecordingsDirectory()
         
         val videoFile = File(recordingsDir, filename)
-        Log.d(TAG, "Created video file: ${videoFile.name}")
+        Log.d(TAG, "Created video file: ${videoFile.name} in ${recordingsDir.absolutePath}")
         return videoFile
+    }
+    
+    fun notifyMediaScanner(videoFile: File) {
+        // Notify media scanner to make video visible in gallery
+        MediaScannerConnection.scanFile(
+            context,
+            arrayOf(videoFile.absolutePath),
+            arrayOf("video/mp4")
+        ) { path, uri ->
+            Log.d(TAG, "Media scanner finished for: $path -> $uri")
+        }
+        
+        // Also send broadcast for immediate gallery update
+        val intent = Intent(Intent.ACTION_MEDIA_SCANNER_SCAN_FILE)
+        intent.data = android.net.Uri.fromFile(videoFile)
+        context.sendBroadcast(intent)
+        
+        Log.d(TAG, "Notified media scanner for: ${videoFile.absolutePath}")
     }
     
     fun checkAndManageStorage(): StorageInfo {
