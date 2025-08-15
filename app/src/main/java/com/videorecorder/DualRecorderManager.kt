@@ -34,7 +34,7 @@ class DualRecorderManager(
     
     companion object {
         private const val TAG = "DualRecorderManager"
-        private const val SEGMENT_DURATION_MS = 5 * 60 * 1000L // 5 minutes
+        private const val SEGMENT_DURATION_MS = 30 * 1000L // 30 seconds for testing
         private const val OVERLAP_DURATION_MS = 2000L // 2 seconds overlap
         private val VIDEO_QUALITY = Quality.HD
     }
@@ -51,19 +51,16 @@ class DualRecorderManager(
     }
     
     fun setupVideoCaptures(): Pair<VideoCapture<Recorder>, VideoCapture<Recorder>> {
-        val primaryRecorder = Recorder.Builder()
+        val recorder = Recorder.Builder()
             .setQualitySelector(QualitySelector.from(VIDEO_QUALITY))
             .build()
         
-        val secondaryRecorder = Recorder.Builder()
-            .setQualitySelector(QualitySelector.from(VIDEO_QUALITY))
-            .build()
+        primaryVideoCapture = VideoCapture.withOutput(recorder)
+        // Use same VideoCapture for both - we'll handle file switching manually
+        secondaryVideoCapture = primaryVideoCapture
         
-        primaryVideoCapture = VideoCapture.withOutput(primaryRecorder)
-        secondaryVideoCapture = VideoCapture.withOutput(secondaryRecorder)
-        
-        Log.d(TAG, "Video captures setup complete")
-        return Pair(primaryVideoCapture!!, secondaryVideoCapture!!)
+        Log.d(TAG, "Video captures setup complete (single recorder mode)")
+        return Pair(primaryVideoCapture!!, primaryVideoCapture!!)
     }
     
     fun setStatusUpdateCallback(callback: (String, String, Int) -> Unit) {
@@ -104,36 +101,28 @@ class DualRecorderManager(
     }
     
     private fun startRecordingWithRecorder(recorderType: RecorderType) {
-        val videoCapture = when (recorderType) {
-            RecorderType.PRIMARY -> primaryVideoCapture
-            RecorderType.SECONDARY -> secondaryVideoCapture
-        }
-        
         val outputFile = createOutputFile()
         val outputOptions = FileOutputOptions.Builder(outputFile).build()
         
-        val recording = videoCapture?.output?.prepareRecording(context, outputOptions)
+        val recording = primaryVideoCapture?.output?.prepareRecording(context, outputOptions)
             ?.withAudioEnabled()
             ?.start(mainExecutor) { recordEvent ->
                 handleRecordingEvent(recordEvent, outputFile.name, recorderType)
             }
         
-        when (recorderType) {
-            RecorderType.PRIMARY -> primaryRecording = recording
-            RecorderType.SECONDARY -> secondaryRecording = recording
-        }
+        primaryRecording = recording
         
         frameTester?.onFrameAvailable(outputFile.name, true)
         onStatusUpdate?.invoke("Recording", outputFile.name, segmentCount)
         
-        Log.d(TAG, "Started recording with ${recorderType.name} recorder: ${outputFile.name}")
+        Log.d(TAG, "Started recording segment ${segmentCount}: ${outputFile.name}")
     }
     
     private fun scheduleNextRecording() {
         if (!isRecording) return
         
         recordingScope.launch {
-            delay(SEGMENT_DURATION_MS - OVERLAP_DURATION_MS)
+            delay(SEGMENT_DURATION_MS)
             
             if (isRecording) {
                 val nextRecorder = if (currentRecorder == RecorderType.PRIMARY) {
@@ -150,19 +139,15 @@ class DualRecorderManager(
     private fun performSeamlessTransition(nextRecorder: RecorderType) {
         val transitionStartTime = System.currentTimeMillis()
         
-        // Start next recorder first
-        startRecordingWithRecorder(nextRecorder)
-        
         recordingScope.launch {
-            delay(OVERLAP_DURATION_MS)
+            // Stop current recording
+            primaryRecording?.stop()
             
-            // Stop current recorder after overlap
-            val currentRecording = when (currentRecorder) {
-                RecorderType.PRIMARY -> primaryRecording
-                RecorderType.SECONDARY -> secondaryRecording
-            }
+            // Small delay to ensure recording stops cleanly
+            delay(100)
             
-            currentRecording?.stop()
+            // Start new recording immediately
+            startRecordingWithRecorder(nextRecorder)
             
             val transitionEndTime = System.currentTimeMillis()
             val transitionDuration = transitionEndTime - transitionStartTime
@@ -176,7 +161,7 @@ class DualRecorderManager(
             currentRecorder = nextRecorder
             segmentCount++
             
-            Log.d(TAG, "Seamless transition complete: ${currentRecorder.name} -> ${nextRecorder.name} (${transitionDuration}ms)")
+            Log.d(TAG, "Quick file transition complete: (${transitionDuration}ms)")
             
             // Schedule next transition
             scheduleNextRecording()

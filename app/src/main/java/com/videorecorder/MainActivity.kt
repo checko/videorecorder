@@ -29,7 +29,7 @@ class MainActivity : AppCompatActivity() {
     private var imageAnalyzer: ImageAnalysis? = null
     
     private var isRecording = false
-    private var frameTestingEnabled = false
+    private var frameTestingEnabled = true
     private var frameCounter = 0L
     private val timestampFormat = SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", Locale.getDefault())
     

@@ -46,7 +46,8 @@
                 android:layout_height="wrap_content"
                 android:text="@string/frame_test_mode"
                 android:textColor="@color/white"
-                android:layout_marginStart="16dp" />
+                android:layout_marginStart="16dp"
+                android:checked="true" />
 
         </LinearLayout>
 
