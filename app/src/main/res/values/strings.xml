@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Video Recorder</string>
+    <string name="start_recording">Start Recording</string>
+    <string name="stop_recording">Stop Recording</string>
+    <string name="recording_status">Recording Status</string>
+    <string name="recording_stopped">Recording Stopped</string>
+    <string name="recording_started">Recording Started</string>
+    <string name="file_saved">File saved: %1$s</string>
+    <string name="permission_denied">Camera and storage permissions are required</string>
+    <string name="frame_test_mode">Frame Test Mode</string>
+    <string name="transition_count">Transitions: %1$d</string>
+    <string name="current_file">Current File: %1$s</string>
+</resources>
