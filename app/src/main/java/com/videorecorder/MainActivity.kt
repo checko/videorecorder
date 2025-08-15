@@ -114,11 +114,8 @@ class MainActivity : AppCompatActivity() {
                 it.setSurfaceProvider(binding.previewView.surfaceProvider)
             }
             
-            imageCapture = ImageCapture.Builder()
-                .setCaptureMode(ImageCapture.CAPTURE_MODE_MINIMIZE_LATENCY)
-                .build()
-            
-            // Image analyzer for frame testing overlay
+            // Simplified setup - remove imageCapture to reduce surface count
+            // Image analyzer for frame testing overlay  
             imageAnalyzer = ImageAnalysis.Builder()
                 .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
                 .build()
@@ -138,17 +135,16 @@ class MainActivity : AppCompatActivity() {
             try {
                 cameraProvider.unbindAll()
                 
-                val (primaryVideoCapture, secondaryVideoCapture) = dualRecorderManager.setupVideoCaptures()
+                val (primaryVideoCapture, _) = dualRecorderManager.setupVideoCaptures()
                 
-                // Bind all use cases to camera in one call
+                // Bind only essential use cases to avoid surface combination limits
+                // Only bind primary video capture initially - secondary will be bound dynamically
                 cameraProvider.bindToLifecycle(
                     this,
                     cameraSelector,
                     preview,
-                    imageCapture,
                     imageAnalyzer,
-                    primaryVideoCapture,
-                    secondaryVideoCapture
+                    primaryVideoCapture
                 )
                 
                 Log.d(TAG, "Camera started successfully")
