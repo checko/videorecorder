@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-This is an Android application written in Kotlin that implements a continuous video recorder with zero frame drops. The app records camera video in 5-minute segments with seamless transitions, using a dual MediaRecorder architecture to prevent frame loss during file switching.
+This is an Android application written in Kotlin that implements a continuous video recorder with zero frame drops. The app records camera video in 30-second segments with seamless transitions, using a dual MediaMuxer architecture with overlap recording to prevent frame loss during file switching.
 
 ## Build Commands
 

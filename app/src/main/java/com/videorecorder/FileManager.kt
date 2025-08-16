@@ -56,7 +56,7 @@ class FileManager(private val context: Context) {
         var videoFile: File
         do {
             val suffix = if (counter == 0) "" else "_$counter"
-            val filename = "$baseFilename$suffix.ts"
+            val filename = "$baseFilename$suffix.mp4"  // Changed to .mp4 since we're using MediaMuxer MP4 format
             videoFile = File(recordingsDir, filename)
             counter++
         } while (videoFile.exists() && counter < 1000) // Prevent infinite loop
@@ -103,11 +103,12 @@ class FileManager(private val context: Context) {
         try {
             // Use MediaStore to create a file visible in gallery
             val values = ContentValues().apply {
-                put(MediaStore.Video.Media.DISPLAY_NAME, sourceFile.name.replace(".ts", ".mp4"))
+                put(MediaStore.Video.Media.DISPLAY_NAME, sourceFile.name) // Keep original .mp4 name
                 put(MediaStore.Video.Media.MIME_TYPE, "video/mp4")
                 put(MediaStore.Video.Media.RELATIVE_PATH, "DCIM/Camera")
                 put(MediaStore.Video.Media.DATE_ADDED, System.currentTimeMillis() / 1000)
                 put(MediaStore.Video.Media.DATE_TAKEN, System.currentTimeMillis())
+                put(MediaStore.Video.Media.IS_PENDING, 0) // Mark as not pending for immediate visibility
             }
             
             val uri = context.contentResolver.insert(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, values)
@@ -173,7 +174,7 @@ class FileManager(private val context: Context) {
     
     private fun cleanupOldFiles() {
         val recordingsDir = getRecordingsDirectory()
-        val files = recordingsDir.listFiles()?.filter { it.isFile && it.extension == "ts" }
+        val files = recordingsDir.listFiles()?.filter { it.isFile && it.extension == "mp4" } // Changed from "ts" to "mp4"
             ?.sortedBy { it.lastModified() } // Sort by oldest first
         
         if (files.isNullOrEmpty()) return
@@ -235,7 +236,7 @@ class FileManager(private val context: Context) {
     
     fun getAllVideoFiles(): List<VideoFileInfo> {
         val recordingsDir = getRecordingsDirectory()
-        val files = recordingsDir.listFiles()?.filter { it.isFile && it.extension == "ts" }
+        val files = recordingsDir.listFiles()?.filter { it.isFile && it.extension == "mp4" } // Changed from "ts" to "mp4"
             ?.sortedByDescending { it.lastModified() } // Sort by newest first
         
         return files?.map { file ->

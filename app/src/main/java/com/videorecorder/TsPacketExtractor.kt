@@ -112,6 +112,57 @@ class TsPacketExtractor {
     }
     
     /**
+     * Creates MPEG-TS packets from raw codec data (H.264/AAC)
+     * This is a simplified implementation for Android media player compatibility
+     */
+    fun createTSPackets(codecData: ByteArray, timestamp: Long, isVideo: Boolean): List<TsPacket> {
+        val packets = mutableListOf<TsPacket>()
+        
+        try {
+            // For now, create a basic TS packet wrapper
+            // In a full implementation, this would include proper TS headers, PES wrapping, etc.
+            
+            val chunkSize = TS_PACKET_SIZE - 4 // Reserve 4 bytes for TS header
+            var offset = 0
+            var continuityCounter = 0
+            
+            while (offset < codecData.size) {
+                val remainingData = codecData.size - offset
+                val payloadSize = minOf(chunkSize, remainingData)
+                
+                // Create TS packet with basic header
+                val tsPacketData = ByteArray(TS_PACKET_SIZE)
+                
+                // TS Header (4 bytes minimum)
+                tsPacketData[0] = TS_SYNC_BYTE
+                tsPacketData[1] = if (isVideo) 0x41.toByte() else 0x51.toByte() // PID
+                tsPacketData[2] = 0x00.toByte()
+                tsPacketData[3] = (0x10 or (continuityCounter and 0x0F)).toByte()
+                
+                // Copy payload data
+                System.arraycopy(codecData, offset, tsPacketData, 4, payloadSize)
+                
+                // Pad remaining bytes with 0xFF (TS padding)
+                for (i in (4 + payloadSize) until TS_PACKET_SIZE) {
+                    tsPacketData[i] = 0xFF.toByte()
+                }
+                
+                val packet = TsPacket(tsPacketData, timestamp, totalPacketsExtracted)
+                packets.add(packet)
+                
+                offset += payloadSize
+                continuityCounter = (continuityCounter + 1) and 0x0F
+                totalPacketsExtracted++
+            }
+            
+        } catch (e: Exception) {
+            Log.e(TAG, "Error creating TS packets", e)
+        }
+        
+        return packets
+    }
+    
+    /**
      * Gets statistics about packet extraction
      */
     fun getStatistics(): ExtractionStatistics {
