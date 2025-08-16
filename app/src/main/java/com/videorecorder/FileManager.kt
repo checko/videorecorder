@@ -45,7 +45,7 @@ class FileManager(private val context: Context) {
     
     fun createVideoFile(segmentNumber: Int): File {
         val timestamp = dateFormat.format(Date())
-        val filename = "VID_${timestamp}_${String.format("%03d", segmentNumber)}.mp4"
+        val filename = "VID_${timestamp}_${String.format("%03d", segmentNumber)}.ts"
         val recordingsDir = getRecordingsDirectory()
         
         val videoFile = File(recordingsDir, filename)
@@ -58,7 +58,7 @@ class FileManager(private val context: Context) {
         MediaScannerConnection.scanFile(
             context,
             arrayOf(videoFile.absolutePath),
-            arrayOf("video/mp4")
+            arrayOf("video/mp2t")
         ) { path, uri ->
             Log.d(TAG, "Media scanner finished for: $path -> $uri")
         }
@@ -92,7 +92,7 @@ class FileManager(private val context: Context) {
     
     private fun cleanupOldFiles() {
         val recordingsDir = getRecordingsDirectory()
-        val files = recordingsDir.listFiles()?.filter { it.isFile && it.extension == "mp4" }
+        val files = recordingsDir.listFiles()?.filter { it.isFile && it.extension == "ts" }
             ?.sortedBy { it.lastModified() } // Sort by oldest first
         
         if (files.isNullOrEmpty()) return
@@ -154,7 +154,7 @@ class FileManager(private val context: Context) {
     
     fun getAllVideoFiles(): List<VideoFileInfo> {
         val recordingsDir = getRecordingsDirectory()
-        val files = recordingsDir.listFiles()?.filter { it.isFile && it.extension == "mp4" }
+        val files = recordingsDir.listFiles()?.filter { it.isFile && it.extension == "ts" }
             ?.sortedByDescending { it.lastModified() } // Sort by newest first
         
         return files?.map { file ->

@@ -5,6 +5,7 @@ import android.content.pm.PackageManager
 import android.graphics.*
 import android.os.Bundle
 import android.util.Log
+import android.view.Surface
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
@@ -23,16 +24,13 @@ import java.util.concurrent.Executors
 class MainActivity : AppCompatActivity() {
     private lateinit var binding: ActivityMainBinding
     private lateinit var cameraExecutor: ExecutorService
-    private lateinit var dualRecorderManager: DualRecorderManager
-    
-    private var imageCapture: ImageCapture? = null
-    private var imageAnalyzer: ImageAnalysis? = null
-    
+    private lateinit var recordingManager: RecordingManager
+
     private var isRecording = false
     private var frameTestingEnabled = true
     private var frameCounter = 0L
     private val timestampFormat = SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", Locale.getDefault())
-    
+
     companion object {
         private const val TAG = "MainActivity"
         private val REQUIRED_PERMISSIONS = arrayOf(
@@ -41,7 +39,7 @@ class MainActivity : AppCompatActivity() {
             Manifest.permission.WRITE_EXTERNAL_STORAGE
         )
     }
-    
+
     private val activityResultLauncher =
         registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { permissions ->
             var permissionGranted = true
@@ -57,23 +55,23 @@ class MainActivity : AppCompatActivity() {
                 startCamera()
             }
         }
-    
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         binding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(binding.root)
-        
+
         cameraExecutor = Executors.newSingleThreadExecutor()
-        
+
         setupUI()
-        
+
         if (allPermissionsGranted()) {
             startCamera()
         } else {
             activityResultLauncher.launch(REQUIRED_PERMISSIONS)
         }
     }
-    
+
     private fun setupUI() {
         binding.btnRecord.setOnClickListener {
             if (isRecording) {
@@ -82,18 +80,18 @@ class MainActivity : AppCompatActivity() {
                 startRecording()
             }
         }
-        
+
         binding.switchTestMode.setOnCheckedChangeListener { _, isChecked ->
             frameTestingEnabled = isChecked
-            if (::dualRecorderManager.isInitialized) {
-                dualRecorderManager.cleanup()
-                initializeDualRecorder()
+            if (::recordingManager.isInitialized) {
+                recordingManager.stopRecording()
             }
+            initializeRecordingManager()
         }
-        
+
         updateTimestamp()
     }
-    
+
     private fun updateTimestamp() {
         lifecycleScope.launch {
             while (true) {
@@ -103,66 +101,49 @@ class MainActivity : AppCompatActivity() {
             }
         }
     }
-    
+
     private fun startCamera() {
         val cameraProviderFuture = ProcessCameraProvider.getInstance(this)
-        
+
         cameraProviderFuture.addListener({
             val cameraProvider: ProcessCameraProvider = cameraProviderFuture.get()
-            
+
             val preview = Preview.Builder().build().also {
                 it.setSurfaceProvider(binding.previewView.surfaceProvider)
             }
+
+            initializeRecordingManager()
             
-            // Simplified setup - remove imageCapture to reduce surface count
-            // Image analyzer for frame testing overlay  
-            imageAnalyzer = ImageAnalysis.Builder()
-                .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
-                .build()
-                .also { analyzer ->
-                    analyzer.setAnalyzer(cameraExecutor) { imageProxy ->
-                        if (frameTestingEnabled && isRecording) {
-                            frameCounter++
-                        }
-                        imageProxy.close()
-                    }
-                }
-            
-            initializeDualRecorder()
-            
+            val videoCapture = VideoCapture.Builder().build()
+
             val cameraSelector = CameraSelector.DEFAULT_BACK_CAMERA
-            
+
             try {
                 cameraProvider.unbindAll()
-                
-                val (primaryVideoCapture, _) = dualRecorderManager.setupVideoCaptures()
-                
-                // Bind only essential use cases to avoid surface combination limits
-                // Only bind primary video capture initially - secondary will be bound dynamically
+
                 cameraProvider.bindToLifecycle(
                     this,
                     cameraSelector,
                     preview,
-                    imageAnalyzer,
-                    primaryVideoCapture
+                    videoCapture
                 )
-                
+
                 Log.d(TAG, "Camera started successfully")
-                
+
             } catch (exc: Exception) {
                 Log.e(TAG, "Use case binding failed", exc)
                 Toast.makeText(this, "Camera initialization failed", Toast.LENGTH_SHORT).show()
             }
         }, ContextCompat.getMainExecutor(this))
     }
-    
-    private fun initializeDualRecorder() {
-        dualRecorderManager = DualRecorderManager(
+
+    private fun initializeRecordingManager() {
+        recordingManager = RecordingManager(
             context = this,
             frameTestingEnabled = frameTestingEnabled
         )
-        
-        dualRecorderManager.setStatusUpdateCallback { status, filename, transitions ->
+
+        recordingManager.setStatusUpdateCallback { status, filename, transitions ->
             runOnUiThread {
                 binding.tvStatus.text = status
                 binding.tvCurrentFile.text = if (filename.isNotEmpty()) {
@@ -172,69 +153,52 @@ class MainActivity : AppCompatActivity() {
             }
         }
     }
-    
+
     private fun startRecording() {
-        if (!::dualRecorderManager.isInitialized) {
+        if (!::recordingManager.isInitialized) {
             Toast.makeText(this, "Camera not ready", Toast.LENGTH_SHORT).show()
             return
         }
-        
+
         isRecording = true
         frameCounter = 0
         
-        dualRecorderManager.startRecording()
-        
+        recordingManager.startRecording()
+        val surface = recordingManager.videoEncoderSurface
+        if(surface != null) {
+            // How to connect the surface to the camera?
+        }
+
+
         binding.btnRecord.apply {
             text = getString(R.string.stop_recording)
             setBackgroundColor(ContextCompat.getColor(this@MainActivity, R.color.green))
         }
-        
+
         Log.d(TAG, "Recording started with frame testing: $frameTestingEnabled")
     }
-    
+
     private fun stopRecording() {
         isRecording = false
-        
-        dualRecorderManager.stopRecording()
-        
+
+        recordingManager.stopRecording()
+
         binding.btnRecord.apply {
             text = getString(R.string.start_recording)
             setBackgroundColor(ContextCompat.getColor(this@MainActivity, R.color.red))
         }
-        
-        // Show test results if frame testing was enabled
-        if (frameTestingEnabled) {
-            showTestResults()
-        }
-        
+
         Log.d(TAG, "Recording stopped")
     }
-    
-    private fun showTestResults() {
-        val testResult = dualRecorderManager.getTestResults()
-        testResult?.let { result ->
-            val message = buildString {
-                appendLine("Frame Continuity Test Results:")
-                appendLine("Success: ${result.isSuccess}")
-                appendLine("Gaps found: ${result.gaps.size}")
-                appendLine("Max gap: ${result.maxGapMs}ms")
-                appendLine("Avg transition: ${String.format("%.2f", result.averageTransitionTimeMs)}ms")
-                appendLine("Frames lost: ${result.totalFramesLost}")
-            }
-            
-            Toast.makeText(this, message, Toast.LENGTH_LONG).show()
-            Log.d(TAG, message)
-        }
-    }
-    
+
     private fun allPermissionsGranted() = REQUIRED_PERMISSIONS.all {
         ContextCompat.checkSelfPermission(baseContext, it) == PackageManager.PERMISSION_GRANTED
     }
-    
+
     override fun onDestroy() {
         super.onDestroy()
-        if (::dualRecorderManager.isInitialized) {
-            dualRecorderManager.cleanup()
+        if (::recordingManager.isInitialized) {
+            recordingManager.stopRecording()
         }
         cameraExecutor.shutdown()
     }
