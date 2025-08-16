@@ -1,10 +1,13 @@
 package com.videorecorder
 
+import android.content.ContentValues
 import android.content.Context
 import android.content.Intent
 import android.media.MediaScannerConnection
+import android.os.Build
 import android.os.Environment
 import android.os.StatFs
+import android.provider.MediaStore
 import android.util.Log
 import java.io.File
 import java.text.SimpleDateFormat
@@ -23,15 +26,15 @@ class FileManager(private val context: Context) {
     private val dateFormat = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault())
     
     fun getRecordingsDirectory(): File {
-        // Use DCIM/Camera directory for standard gallery visibility
-        val dcimDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DCIM)
-        val cameraDir = File(dcimDir, "Camera")
+        // Use app-specific external storage (no permissions needed)
+        val appMoviesDir = context.getExternalFilesDir(Environment.DIRECTORY_MOVIES)
+        val recordingsDir = File(appMoviesDir, "VideoRecorder")
         
-        if (!cameraDir.exists()) {
-            cameraDir.mkdirs()
-            Log.d(TAG, "Created Camera directory: ${cameraDir.absolutePath}")
+        if (!recordingsDir.exists()) {
+            recordingsDir.mkdirs()
+            Log.d(TAG, "Created recordings directory: ${recordingsDir.absolutePath}")
         }
-        return cameraDir
+        return recordingsDir
     }
     
     fun getFrameLogsDirectory(): File {
@@ -45,16 +48,46 @@ class FileManager(private val context: Context) {
     
     fun createVideoFile(segmentNumber: Int): File {
         val timestamp = dateFormat.format(Date())
-        val filename = "VID_${timestamp}_${String.format("%03d", segmentNumber)}.ts"
+        val baseFilename = "VID_${timestamp}_${String.format("%03d", segmentNumber)}"
         val recordingsDir = getRecordingsDirectory()
         
-        val videoFile = File(recordingsDir, filename)
+        // Generate unique filename to avoid conflicts
+        var counter = 0
+        var videoFile: File
+        do {
+            val suffix = if (counter == 0) "" else "_$counter"
+            val filename = "$baseFilename$suffix.ts"
+            videoFile = File(recordingsDir, filename)
+            counter++
+        } while (videoFile.exists() && counter < 1000) // Prevent infinite loop
+        
         Log.d(TAG, "Created video file: ${videoFile.name} in ${recordingsDir.absolutePath}")
+        
         return videoFile
     }
     
+    private fun addToMediaStore(videoFile: File) {
+        try {
+            val values = ContentValues().apply {
+                put(MediaStore.Video.Media.DISPLAY_NAME, videoFile.name)
+                put(MediaStore.Video.Media.MIME_TYPE, "video/mp2t")
+                put(MediaStore.Video.Media.RELATIVE_PATH, "DCIM/Camera")
+                put(MediaStore.Video.Media.DATE_ADDED, System.currentTimeMillis() / 1000)
+                put(MediaStore.Video.Media.DATE_TAKEN, System.currentTimeMillis())
+            }
+            
+            val uri = context.contentResolver.insert(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, values)
+            Log.d(TAG, "Added to MediaStore: ${videoFile.name} -> $uri")
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to add to MediaStore", e)
+        }
+    }
+    
     fun notifyMediaScanner(videoFile: File) {
-        // Notify media scanner to make video visible in gallery
+        // Copy file to public gallery location for visibility
+        copyToGallery(videoFile)
+        
+        // Simple media scanner notification for original file
         MediaScannerConnection.scanFile(
             context,
             arrayOf(videoFile.absolutePath),
@@ -63,12 +96,60 @@ class FileManager(private val context: Context) {
             Log.d(TAG, "Media scanner finished for: $path -> $uri")
         }
         
-        // Also send broadcast for immediate gallery update
-        val intent = Intent(Intent.ACTION_MEDIA_SCANNER_SCAN_FILE)
-        intent.data = android.net.Uri.fromFile(videoFile)
-        context.sendBroadcast(intent)
-        
         Log.d(TAG, "Notified media scanner for: ${videoFile.absolutePath}")
+    }
+    
+    private fun copyToGallery(sourceFile: File) {
+        try {
+            // Use MediaStore to create a file visible in gallery
+            val values = ContentValues().apply {
+                put(MediaStore.Video.Media.DISPLAY_NAME, sourceFile.name.replace(".ts", ".mp4"))
+                put(MediaStore.Video.Media.MIME_TYPE, "video/mp4")
+                put(MediaStore.Video.Media.RELATIVE_PATH, "DCIM/Camera")
+                put(MediaStore.Video.Media.DATE_ADDED, System.currentTimeMillis() / 1000)
+                put(MediaStore.Video.Media.DATE_TAKEN, System.currentTimeMillis())
+            }
+            
+            val uri = context.contentResolver.insert(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, values)
+            
+            if (uri != null) {
+                context.contentResolver.openOutputStream(uri)?.use { outputStream ->
+                    sourceFile.inputStream().use { inputStream ->
+                        inputStream.copyTo(outputStream)
+                    }
+                }
+                Log.d(TAG, "Video copied to gallery: ${sourceFile.name} -> $uri")
+            } else {
+                Log.e(TAG, "Failed to create MediaStore entry")
+            }
+            
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to copy video to gallery", e)
+        }
+    }
+    
+    private fun createGalleryCompatibleCopy(tsFile: File) {
+        try {
+            // Create an .mp4 file that points to the same content for gallery visibility
+            val mp4Name = tsFile.name.replace(".ts", ".mp4")
+            val mp4File = File(tsFile.parent, mp4Name)
+            
+            // Copy the file with .mp4 extension
+            tsFile.copyTo(mp4File, overwrite = true)
+            
+            // Notify media scanner about the .mp4 file
+            MediaScannerConnection.scanFile(
+                context,
+                arrayOf(mp4File.absolutePath),
+                arrayOf("video/mp4")
+            ) { path, uri ->
+                Log.d(TAG, "MP4 copy added to gallery: $path -> $uri")
+            }
+            
+            Log.d(TAG, "Created gallery-compatible copy: ${mp4File.name}")
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to create gallery-compatible copy", e)
+        }
     }
     
     fun checkAndManageStorage(): StorageInfo {

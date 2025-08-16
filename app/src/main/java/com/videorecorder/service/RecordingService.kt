@@ -6,11 +6,11 @@ import android.content.Intent
 import android.os.Binder
 import android.os.IBinder
 import androidx.core.app.NotificationCompat
-import com.videorecorder.DualRecorderManager
+import com.videorecorder.RecordingManager
 import com.videorecorder.R
 
 class RecordingService : Service() {
-    private lateinit var dualRecorderManager: DualRecorderManager
+    private lateinit var recordingManager: RecordingManager
     private val binder = RecordingBinder()
     
     companion object {
@@ -26,7 +26,7 @@ class RecordingService : Service() {
     override fun onCreate() {
         super.onCreate()
         createNotificationChannel()
-        dualRecorderManager = DualRecorderManager(this, true)
+        recordingManager = RecordingManager(this, true)
     }
     
     override fun onBind(intent: Intent): IBinder {
@@ -64,16 +64,16 @@ class RecordingService : Service() {
     }
     
     fun startRecording() {
-        dualRecorderManager.startRecording()
+        recordingManager.startRecording()
     }
     
     fun stopRecording() {
-        dualRecorderManager.stopRecording()
+        recordingManager.stopRecording()
         stopSelf()
     }
     
     override fun onDestroy() {
         super.onDestroy()
-        dualRecorderManager.cleanup()
+        recordingManager.stopRecording()
     }
 }

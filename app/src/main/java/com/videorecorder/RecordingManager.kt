@@ -7,9 +7,6 @@ import android.os.Handler
 import android.os.HandlerThread
 import android.util.Log
 import android.view.Surface
-import androidx.camera.core.VideoCapture
-import androidx.camera.video.Quality
-import androidx.camera.video.QualitySelector
 import kotlinx.coroutines.*
 import java.io.File
 import java.nio.ByteBuffer
@@ -37,11 +34,19 @@ class RecordingManager(
     private val dateFormat = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault())
 
     private var onStatusUpdate: ((String, String, Int) -> Unit)? = null
-    private var frameTester: FrameContinuityTester? = null
+    var frameTester: FrameContinuityTester? = null
     private val fileManager = FileManager(context)
+
+    // Packet-based recording components
+    private var packetExtractor: TsPacketExtractor? = null
+    private var fileWriter: ContinuousFileWriter? = null
 
     private lateinit var audioHandler: Handler
     private lateinit var audioHandlerThread: HandlerThread
+    
+    // Timestamp synchronization
+    private var recordingStartTime: Long = 0
+    private var muxerStarted = false
 
     companion object {
         private const val TAG = "RecordingManager"
@@ -63,6 +68,13 @@ class RecordingManager(
             val logDir = File(context.getExternalFilesDir(null), "frame_logs")
             frameTester = FrameContinuityTester(logDir)
         }
+        
+        // Initialize packet-based components
+        packetExtractor = TsPacketExtractor()
+        fileWriter = ContinuousFileWriter(fileManager, SEGMENT_DURATION_MS, frameTester)
+        fileWriter?.setStatusUpdateCallback { status, filename, transitions ->
+            onStatusUpdate?.invoke(status, filename, transitions)
+        }
     }
 
     fun setStatusUpdateCallback(callback: (String, String, Int) -> Unit) {
@@ -73,17 +85,25 @@ class RecordingManager(
     fun startRecording() {
         if (isRecording) return
 
-        isRecording = true
-        segmentCount = 0
+        try {
+            isRecording = true
+            recordingStartTime = System.nanoTime()
+            muxerStarted = false
 
-        frameTester?.startFrameLogging()
+            frameTester?.startFrameLogging()
+            fileWriter?.startWriting()
 
-        setupCodecs()
-        startMuxer()
-        startAudioRecording()
-        scheduleNextSegment()
+            setupCodecs()
+            startMuxer()
+            startCodecs()
+            startAudioRecording()
 
-        Log.d(TAG, "Recording started")
+            Log.d(TAG, "Packet-based recording started")
+        } catch (e: Exception) {
+            Log.e(TAG, "Error starting recording", e)
+            isRecording = false
+            throw e
+        }
     }
 
     fun stopRecording() {
@@ -92,23 +112,57 @@ class RecordingManager(
         isRecording = false
         recordingJob.cancelChildren()
 
-        videoCodec?.stop()
-        videoCodec?.release()
-        audioCodec?.stop()
-        audioCodec?.release()
-        audioRecord?.stop()
-        audioRecord?.release()
+        // Stop packet-based writing first
+        fileWriter?.stopWriting()
 
-        muxer?.stop()
-        muxer?.release()
-        muxer = null
+        try {
+            videoCodec?.stop()
+            videoCodec?.release()
+        } catch (e: Exception) {
+            Log.e(TAG, "Error stopping video codec", e)
+        }
+        
+        try {
+            audioCodec?.stop()
+            audioCodec?.release()
+        } catch (e: Exception) {
+            Log.e(TAG, "Error stopping audio codec", e)
+        }
+        
+        try {
+            audioRecord?.stop()
+            audioRecord?.release()
+        } catch (e: Exception) {
+            Log.e(TAG, "Error stopping audio record", e)
+        }
 
-        audioHandlerThread.quitSafely()
+        try {
+            // Only stop muxer if it was actually started
+            if (muxerStarted) {
+                muxer?.stop()
+            }
+            muxer?.release()
+            muxer = null
+            muxerStarted = false
+        } catch (e: Exception) {
+            Log.e(TAG, "Error stopping muxer", e)
+        }
 
+        try {
+            audioHandlerThread.quitSafely()
+        } catch (e: Exception) {
+            Log.e(TAG, "Error stopping audio handler", e)
+        }
+        
         frameTester?.stopFrameLogging()
 
-        onStatusUpdate?.invoke("Recording stopped", "", segmentCount)
-        Log.d(TAG, "Recording stopped")
+        // Log final statistics
+        val extractorStats = packetExtractor?.getStatistics()
+        val writerStats = fileWriter?.getStatistics()
+        Log.d(TAG, "Recording stopped - Extracted: ${extractorStats?.totalPacketsExtracted} packets, " +
+                "Written: ${writerStats?.totalPacketsWritten} packets")
+
+        onStatusUpdate?.invoke("Recording stopped", "", writerStats?.fileTransitions ?: 0)
     }
 
     @SuppressLint("MissingPermission")
@@ -129,8 +183,8 @@ class RecordingManager(
         audioFormat.setInteger(MediaFormat.KEY_BIT_RATE, AUDIO_BITRATE)
         audioCodec = MediaCodec.createEncoderByType(AUDIO_MIME_TYPE)
         audioCodec?.configure(audioFormat, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
-        val bufferSize = AudioRecord.getMinBufferSize(AUDIO_SAMPLE_RATE, AudioRecord.CHANNEL_IN_MONO, AudioRecord.ENCODING_PCM_16BIT)
-        audioRecord = AudioRecord(MediaRecorder.AudioSource.MIC, AUDIO_SAMPLE_RATE, AudioRecord.CHANNEL_IN_MONO, AudioRecord.ENCODING_PCM_16BIT, bufferSize)
+        val bufferSize = AudioRecord.getMinBufferSize(AUDIO_SAMPLE_RATE, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT)
+        audioRecord = AudioRecord(MediaRecorder.AudioSource.MIC, AUDIO_SAMPLE_RATE, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT, bufferSize)
 
         audioHandlerThread = HandlerThread("AudioHandlerThread")
         audioHandlerThread.start()
@@ -138,12 +192,20 @@ class RecordingManager(
     }
 
     private fun startMuxer() {
-        val outputFile = fileManager.createVideoFile(segmentCount)
-        muxer = MediaMuxer(outputFile.absolutePath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG2TS)
-
-        videoTrackIndex = muxer?.addTrack(videoCodec!!.outputFormat) ?: -1
-        audioTrackIndex = muxer?.addTrack(audioCodec!!.outputFormat) ?: -1
-        muxer?.start()
+        // Skip MediaMuxer for now - write directly to files
+        Log.d(TAG, "Skipping MediaMuxer - writing directly to continuous files")
+    }
+    
+    private fun startCodecs() {
+        videoCodec?.start()
+        audioCodec?.start()
+        
+        // Start processing codec outputs
+        recordingScope.launch(Dispatchers.IO) {
+            processVideoAndAudioOutput()
+        }
+        
+        Log.d(TAG, "MediaCodecs started")
     }
 
     private fun startAudioRecording() {
@@ -154,49 +216,149 @@ class RecordingManager(
     private fun processAudio() {
         if (!isRecording) return
 
-        val buffer = ByteBuffer.allocateDirect(1024)
-        val size = audioRecord?.read(buffer, 1024) ?: 0
-        if (size > 0) {
-            val info = MediaCodec.BufferInfo()
-            info.offset = 0
-            info.size = size
-            info.presentationTimeUs = (System.nanoTime() / 1000)
-            info.flags = 0
-
-            val inputBufferIndex = audioCodec?.dequeueInputBuffer(-1) ?: -1
-            if (inputBufferIndex >= 0) {
-                val inputBuffer = audioCodec?.getInputBuffer(inputBufferIndex)
-                inputBuffer?.clear()
-                inputBuffer?.put(buffer)
-                audioCodec?.queueInputBuffer(inputBufferIndex, 0, size, info.presentationTimeUs, 0)
+        try {
+            val buffer = ByteBuffer.allocateDirect(1024)
+            val size = audioRecord?.read(buffer, 1024) ?: 0
+            
+            if (size > 0) {
+                val presentationTimeUs = (System.nanoTime() - recordingStartTime) / 1000
+                
+                val inputBufferIndex = audioCodec?.dequeueInputBuffer(0) ?: -1
+                if (inputBufferIndex >= 0) {
+                    val inputBuffer = audioCodec?.getInputBuffer(inputBufferIndex)
+                    inputBuffer?.clear()
+                    inputBuffer?.put(buffer)
+                    audioCodec?.queueInputBuffer(inputBufferIndex, 0, size, presentationTimeUs, 0)
+                }
             }
-        }
 
-        val outputBufferIndex = audioCodec?.dequeueOutputBuffer(info, 0) ?: -1
-        if (outputBufferIndex >= 0) {
-            val outputBuffer = audioCodec?.getOutputBuffer(outputBufferIndex)
-            muxer?.writeSampleData(audioTrackIndex, outputBuffer!!, info)
-            audioCodec?.releaseOutputBuffer(outputBufferIndex, false)
+        } catch (e: Exception) {
+            Log.e(TAG, "Error processing audio input", e)
         }
 
         if (isRecording) {
             audioHandler.post { processAudio() }
         }
     }
-
-    private fun scheduleNextSegment() {
-        if (!isRecording) return
-
-        recordingScope.launch {
-            delay(SEGMENT_DURATION_MS)
-
-            if (isRecording) {
-                segmentCount++
-                val nextOutputFile = fileManager.createVideoFile(segmentCount)
-                muxer?.setOutputNextFile(nextOutputFile)
-                onStatusUpdate?.invoke("Recording", nextOutputFile.name, segmentCount)
-                scheduleNextSegment()
+    
+    /**
+     * Process both video and audio codec outputs and extract TS packets
+     */
+    private fun processVideoAndAudioOutput() {
+        val videoInfo = MediaCodec.BufferInfo()
+        val audioInfo = MediaCodec.BufferInfo()
+        
+        while (isRecording) {
+            try {
+                // Process video output
+                processVideoOutput(videoInfo)
+                
+                // Process audio output  
+                processAudioOutput(audioInfo)
+                
+                // Small delay to prevent busy waiting
+                Thread.sleep(1)
+                
+            } catch (e: Exception) {
+                Log.e(TAG, "Error in codec output processing", e)
+                break
             }
         }
     }
+    
+    private fun processVideoOutput(info: MediaCodec.BufferInfo) {
+        val outputBufferIndex = videoCodec?.dequeueOutputBuffer(info, 0) ?: -1
+        
+        when (outputBufferIndex) {
+            MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> {
+                Log.d(TAG, "Video MediaCodec format changed - ready for direct writing")
+                muxerStarted = true
+            }
+            
+            MediaCodec.INFO_TRY_AGAIN_LATER -> {
+                // No output available
+            }
+            
+            else -> {
+                if (outputBufferIndex >= 0) {
+                    val outputBuffer = videoCodec?.getOutputBuffer(outputBufferIndex)
+                    
+                    if (outputBuffer != null && info.size > 0) {
+                        // Write video data directly to our continuous files
+                        writeVideoDataDirectly(outputBuffer, info)
+                        Log.v(TAG, "Video frame written: size=${info.size}, timestamp=${info.presentationTimeUs}")
+                    }
+                    
+                    videoCodec?.releaseOutputBuffer(outputBufferIndex, false)
+                }
+            }
+        }
+    }
+    
+    private fun processAudioOutput(info: MediaCodec.BufferInfo) {
+        val outputBufferIndex = audioCodec?.dequeueOutputBuffer(info, 0) ?: -1
+        
+        when (outputBufferIndex) {
+            MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> {
+                Log.d(TAG, "Audio MediaCodec format changed")
+            }
+            
+            MediaCodec.INFO_TRY_AGAIN_LATER -> {
+                // No output available
+            }
+            
+            else -> {
+                if (outputBufferIndex >= 0) {
+                    val outputBuffer = audioCodec?.getOutputBuffer(outputBufferIndex)
+                    
+                    if (outputBuffer != null && info.size > 0) {
+                        // Write audio data directly
+                        writeAudioDataDirectly(outputBuffer, info)
+                        Log.v(TAG, "Audio frame written: size=${info.size}, timestamp=${info.presentationTimeUs}")
+                    }
+                    
+                    audioCodec?.releaseOutputBuffer(outputBufferIndex, false)
+                }
+            }
+        }
+    }
+    
+    /**
+     * Write video data directly to continuous files
+     */
+    private fun writeVideoDataDirectly(buffer: ByteBuffer, info: MediaCodec.BufferInfo) {
+        try {
+            // Create a simple packet with video data
+            val dataSize = info.size
+            val packetData = ByteArray(dataSize)
+            buffer.position(info.offset)
+            buffer.get(packetData, 0, dataSize)
+            
+            val packet = TsPacket(packetData, info.presentationTimeUs * 1000, 0) // Convert to nanoseconds
+            fileWriter?.writePacket(packet)
+            
+        } catch (e: Exception) {
+            Log.e(TAG, "Error writing video data directly", e)
+        }
+    }
+    
+    /**
+     * Write audio data directly to continuous files
+     */
+    private fun writeAudioDataDirectly(buffer: ByteBuffer, info: MediaCodec.BufferInfo) {
+        try {
+            // Create a simple packet with audio data
+            val dataSize = info.size
+            val packetData = ByteArray(dataSize)
+            buffer.position(info.offset)
+            buffer.get(packetData, 0, dataSize)
+            
+            val packet = TsPacket(packetData, info.presentationTimeUs * 1000, 0) // Convert to nanoseconds
+            fileWriter?.writePacket(packet)
+            
+        } catch (e: Exception) {
+            Log.e(TAG, "Error writing audio data directly", e)
+        }
+    }
+
 }
