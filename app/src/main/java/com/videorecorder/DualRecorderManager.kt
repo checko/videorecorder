@@ -142,27 +142,34 @@ class DualRecorderManager(
         recordingScope.launch {
             // Stop current recording
             primaryRecording?.stop()
-            
+
             // Small delay to ensure recording stops cleanly
             delay(100)
-            
+
+            // Capture the previous file name for logging before starting a new one
+            val previousFileName = frameTester?.getCurrentFileName().orEmpty()
+
+            // Update segment count for the new recording
+            segmentCount++
+
             // Start new recording immediately
             startRecordingWithRecorder(nextRecorder)
-            
+
+            val newFileName = frameTester?.getCurrentFileName().orEmpty()
             val transitionEndTime = System.currentTimeMillis()
             val transitionDuration = transitionEndTime - transitionStartTime
-            
+
+            // Log transition using actual filenames instead of recorder names
             frameTester?.logFileTransition(
-                currentRecorder.name,
-                nextRecorder.name,
+                previousFileName,
+                newFileName,
                 transitionDuration
             )
-            
+
             currentRecorder = nextRecorder
-            segmentCount++
-            
+
             Log.d(TAG, "Quick file transition complete: (${transitionDuration}ms)")
-            
+
             // Schedule next transition
             scheduleNextRecording()
         }
